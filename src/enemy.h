@@ -8,6 +8,9 @@
 #define ESCAPE_BOX      (1024 * 5)
 #define ATTACK_BOX      STALK_BOX
 
+#define RETREAT_PROBABILITY 0x800 // The likelihood that which has been attacked will attempt an retreat
+#define ENGAGE_PROBABILITY 0x100 // The likelihood that enemy attempting to escape will rengage in combat
+
 #define MAX_SHOT_DIST   (64 * 1024)
 
 struct Enemy : Character {
@@ -54,12 +57,13 @@ struct Enemy : Character {
         MOOD_SLEEP, MOOD_STALK, MOOD_ATTACK, MOOD_ESCAPE 
     } mood;
 
-    bool  wound;
+    bool  wasHit;
     int   nextState;
 
     uint16 targetBox;
     vec3   waypoint;
 
+	float thinkRate;
     float thinkTime;
     float length;       // dist from center to head (jaws)
     float aggression;
@@ -76,10 +80,11 @@ struct Enemy : Character {
     bool  targetFromView;   // enemy in target view zone
     bool  targetCanAttack;
 
-    Enemy(IGame *game, int entity, float health, int radius, float length, float aggression) : Character(game, entity, health), ai(AI_RANDOM), mood(MOOD_SLEEP), wound(false), nextState(0), targetBox(TR::NO_BOX), thinkTime(1.0f / 30.0f), length(length), aggression(aggression), radius(radius), hitSound(-1), target(NULL), path(NULL) {
+    Enemy(IGame *game, int entity, float health, int radius, float length, float aggression) : Character(game, entity, health), ai(AI_RANDOM), mood(MOOD_SLEEP), wasHit(false), nextState(0), targetBox(TR::NO_BOX), thinkRate(1.0f / 30.0f), length(length), aggression(aggression), radius(radius), hitSound(-1), target(NULL), path(NULL) {
         targetDist   = +INF;
         targetInView = targetFromView = targetCanAttack = false;
         waypoint     = pos;
+		thinkTime = thinkRate;
     }
 
     virtual ~Enemy() {
@@ -286,7 +291,7 @@ struct Enemy : Character {
         if (hitSound > -1 && health > 0.0f) 
             game->playSound(hitSound, pos, Sound::PAN);
         Character::hit(damage, enemy, hitType);
-        wound = true;
+		wasHit = true;
     };
 
     void bite(int joint, const vec3 &offset, float damage) {
@@ -300,7 +305,7 @@ struct Enemy : Character {
         bool inZone = zone == target->zone;
 
         if (mood == MOOD_SLEEP || mood == MOOD_STALK)
-            return inZone ? MOOD_ATTACK : (wound ? MOOD_ESCAPE : mood);
+            return inZone ? MOOD_ATTACK : (wasHit ? MOOD_ESCAPE : mood);
         
         if (mood == MOOD_ATTACK)
             return inZone ? mood : MOOD_SLEEP;
@@ -310,10 +315,10 @@ struct Enemy : Character {
 
     Mood getMoodRandom() {
         bool inZone = zone == target->zone;
-        bool brave  = rand() < (mood != MOOD_ESCAPE ? 0x7800 : 0x0100) && inZone;
+        bool brave  = rand() < (mood != MOOD_ESCAPE ? RETREAT_PROBABILITY : ENGAGE_PROBABILITY) && inZone;
             
         if (mood == MOOD_SLEEP || mood == MOOD_STALK) {
-            if (wound && !brave)
+            if (wasHit && !brave)
                 return MOOD_ESCAPE;
             if (inZone) {
                 int dx = abs(int(pos.x - target->pos.x));
@@ -324,16 +329,16 @@ struct Enemy : Character {
         }
 
         if (mood == MOOD_ATTACK)
-            return (wound && !brave) ? MOOD_ESCAPE : (!inZone ? MOOD_SLEEP : mood);
+            return (wasHit && !brave) ? MOOD_ESCAPE : (!inZone ? MOOD_SLEEP : mood);
 
         return brave ? MOOD_STALK : mood;
     }
     
     bool think(bool fixedLogic) {
         thinkTime += Core::deltaTime;
-        if (thinkTime < 1.0f / 30.0f)
+        if (thinkTime < thinkRate)
             return false;
-        thinkTime -= 1.0f / 30.0f;
+        thinkTime -= thinkRate;
 
         int zoneOld = zone;
         updateZone();
@@ -350,7 +355,7 @@ struct Enemy : Character {
 
         int targetBoxOld = targetBox;
 
-        bool inZone = zone == target->zone;
+        bool inZone = (zone == target->zone);
 
         if (target->health <= 0.0f || !inZone)
             targetBox = TR::NO_BOX;
@@ -537,6 +542,10 @@ struct Enemy : Character {
         }
         return false;
     }
+
+	virtual void stateUpdateComplete() {
+		wasHit = false;
+	}
 };
 
 
@@ -710,6 +719,7 @@ struct Lion : Enemy {
     };
 
     Lion(IGame *game, int entity) : Enemy(game, entity, 6, 341, 400.0f, 0.25f) {
+		ai = AI_FIXED;
         dropHeight = -1024;
         jointChest = 19;
         jointHead  = 20;
@@ -1097,6 +1107,8 @@ struct Rat : Enemy {
     }
 
     virtual int getStateGround() {
+		ai = AI_RANDOM;
+
         if (!think(false))
             return state;
 
@@ -1137,6 +1149,8 @@ struct Rat : Enemy {
     }
 
     virtual int getStateOnwater() {
+		ai = AI_FIXED;
+
         if (!think(false))
             return state;
 
@@ -1223,6 +1237,7 @@ struct Crocodile : Enemy {
     int modelLand, modelWater;
 
     Crocodile(IGame *game, int entity) : Enemy(game, entity, 20, 341, 600.0f, 0.25f) {
+		ai = AI_FIXED;
         jointChest = 1;
         jointHead  = 8;
 
@@ -1429,6 +1444,7 @@ struct Bear : Enemy {
     };
 
     Bear(IGame *game, int entity) : Enemy(game, entity, 20, 341, 500.0f, 0.5f) {
+		ai = AI_FIXED;
         jointChest = 13;
         jointHead  = 14;
         hitSound   = TR::SND_HIT_BEAR;
@@ -1465,7 +1481,7 @@ struct Bear : Enemy {
                 else
                     return nextState != STATE_NONE ? nextState : (mood == MOOD_SLEEP ? STATE_WALK : STATE_RUN);
             case STATE_HIND     :
-                if (wound) {
+                if (wasHit) {
                     nextState = STATE_NONE;
                     return STATE_HOWL;
                 }
@@ -1488,7 +1504,7 @@ struct Bear : Enemy {
                     return STATE_STOP;
                 if (nextState != STATE_NONE) return STATE_STOP;
                 if (targetInView) {
-                    if (!wound && targetDist < BEAR_DIST_HOWL && randf() < 0.025f) {
+                    if (!wasHit && targetDist < BEAR_DIST_HOWL && randf() < 0.025f) {
                         nextState = STATE_HOWL;
                         return STATE_STOP;
                     } 
@@ -1496,7 +1512,7 @@ struct Bear : Enemy {
                 }
                 break;
             case STATE_HOWL     :
-                if (wound) {
+                if (wasHit) {
                     nextState = STATE_NONE;
                     return STATE_STOP;
                 }
@@ -1652,6 +1668,7 @@ struct Rex : Enemy {
     };
 
     Rex(IGame *game, int entity) : Enemy(game, entity, 100, 341, 2000.0f, 1.0f) {
+		ai = AI_FIXED;
         jointChest = 10;
         jointHead  = 12;    
         nextState  = STATE_NONE;
@@ -1767,6 +1784,7 @@ struct Raptor : Enemy {
     };
 
     Raptor(IGame *game, int entity) : Enemy(game, entity, 20, 341, 400.0f, 0.5f) {
+		ai = AI_FIXED;
         jointChest = -1;
         jointHead  = 21;    
         nextState  = STATE_NONE;
@@ -2123,6 +2141,7 @@ struct GiantMutant : Enemy {
     };
 
     GiantMutant(IGame *game, int entity) : Enemy(game, entity, 500, 341, 375.0f, 1.0f) {
+		ai = AI_FIXED;
         hitSound   = TR::SND_HIT_MUTANT;
         stand      = STAND_AIR;
         jointChest = -1;
@@ -2684,9 +2703,9 @@ struct Larson : Human {
 
 #define PIERRE_MIN_HEALTH   40
 #define PIERRE_DAMAGE       25
+#define PIERRE_DISAPPEAR_TIMER 1.0f
 
 struct Pierre : Human {
-
     Pierre(IGame *game, int entity) : Human(game, entity, 70) {
         animDeath = 12;
     }
@@ -2698,24 +2717,14 @@ struct Pierre : Human {
     }
 
     virtual int getStateGround() {
-        if (!think(false))
+		if (!think(false))
             return state;
 
         if (!flags.once && health <= PIERRE_MIN_HEALTH) {
             health = PIERRE_MIN_HEALTH;
-            timer += Core::deltaTime;
-        }
-
-        if (timer > 0.0f && isVisible()) // time to run away!
-            timer = 0.0f;
-
-        if (getRoom().flags.water)
-            timer = 1.0f;
-
-        if (timer > 0.4f) {
-            flags.invisible = true;
-            deactivate(true);
-        }
+			timer += Core::deltaTime;
+			mood = MOOD_ESCAPE; // If Pierre is below this health threshold, force him to run away!
+		}
 
         fullChestRotation = state == STATE_FIRE || state == STATE_AIM;
 
@@ -2777,6 +2786,18 @@ struct Pierre : Human {
                     nextState = STATE_STOP;
                 break;
         }
+
+		if (timer > 0.0f && isVisible()) {// If Pierre is still visible, reset his timer
+			timer = 0.0f;
+		}
+
+		if (getRoom().flags.water)
+			timer = 1.0f;
+
+		if (timer >= PIERRE_DISAPPEAR_TIMER) {
+			flags.invisible = true;
+			deactivate(true);
+		}
 
         return state;
     }

@@ -168,11 +168,15 @@ struct Character : Controller {
         return animation.state;
     }
 
+	virtual void stateUpdateComplete() {}
+
     virtual void updateState() {
         if (stand == STAND_UNDERWATER || stand == STAND_ONWATER)
             burn = false;
 
         int state = getNextState();
+		stateUpdateComplete();
+
         // try to set new state
         if (!animation.setState(state))
             animation.setState(getStateDefault());
