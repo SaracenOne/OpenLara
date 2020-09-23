@@ -2155,5 +2155,20 @@ struct Array {
     inline operator T*() const { return items; };
 };
 
+struct RNG {
+    int32 random_number;
+
+    void seed_rng(int32 seed) {
+        random_number = seed;
+    }
+
+    int32 rand() {
+        return(((random_number * 0x41c64e6d + 0x3039) >> 10) & 0x7fff);
+    }
+
+    RNG(int32 seed = 0xd371f947) {
+		seed_rng(seed);
+    }
+};
 
 #endif
